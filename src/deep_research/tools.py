@@ -3,7 +3,10 @@
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
+from .logging import get_logger, log_duration
 from .prompts import RESEARCH_PROMPT
+
+logger = get_logger("tools")
 
 
 def create_deep_research_tool(model: ChatOpenAI):
@@ -29,8 +32,24 @@ def create_deep_research_tool(model: ChatOpenAI):
         Returns:
             A detailed research summary for the given query.
         """
+        logger.debug(
+            "deep_research_tool",
+            status="started",
+            query_preview=query[:80] + "..." if len(query) > 80 else query,
+        )
+
         prompt = RESEARCH_PROMPT.format(query=query)
-        response = model.invoke(prompt)
+
+        with log_duration(logger, "llm_call", tool="deep_research") as result_ctx:
+            response = model.invoke(prompt)
+            result_ctx["response_length"] = len(response.content)
+
+        logger.debug(
+            "deep_research_tool",
+            status="completed",
+            response_length=len(response.content),
+        )
+
         return response.content
 
     return deep_research
@@ -59,16 +78,38 @@ def create_query_generator(model: ChatOpenAI):
         Returns:
             A list of search query strings.
         """
+        logger.debug(
+            "query_generator",
+            status="started",
+            num_queries=num_queries,
+        )
+
         prompt = QUERY_GENERATION_PROMPT.format(
             question=question, num_queries=num_queries
         )
-        response = model.invoke(prompt)
+
+        with log_duration(logger, "llm_call", tool="query_generator") as result_ctx:
+            response = model.invoke(prompt)
+            result_ctx["response_length"] = len(response.content)
+
         try:
             queries = json.loads(response.content)
             if isinstance(queries, list):
+                logger.debug(
+                    "query_generator",
+                    status="completed",
+                    query_count=len(queries),
+                    queries=queries,
+                )
                 return queries
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "query_generator_json_error",
+                error=str(e),
+                raw_response=response.content[:200],
+                fallback="using original question",
+            )
+
         return [question]
 
     return generate_queries
@@ -95,6 +136,12 @@ def create_synthesizer(model: ChatOpenAI):
         Returns:
             A synthesized research report.
         """
+        logger.debug(
+            "synthesizer",
+            status="started",
+            section_count=len(research_sections),
+        )
+
         sections_text = "\n\n".join(
             f"## {section['topic']}\n{section['content']}"
             for section in research_sections
@@ -102,7 +149,19 @@ def create_synthesizer(model: ChatOpenAI):
         prompt = SYNTHESIS_PROMPT.format(
             question=question, research_sections=sections_text
         )
-        response = model.invoke(prompt)
+
+        with log_duration(
+            logger, "llm_call", tool="synthesizer", section_count=len(research_sections)
+        ) as result_ctx:
+            response = model.invoke(prompt)
+            result_ctx["response_length"] = len(response.content)
+
+        logger.debug(
+            "synthesizer",
+            status="completed",
+            report_length=len(response.content),
+        )
+
         return response.content
 
     return synthesize

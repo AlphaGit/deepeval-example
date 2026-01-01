@@ -8,10 +8,13 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
+from .logging import get_logger, log_duration
 from .state import ResearchSection, ResearchState
 from .tools import create_deep_research_tool, create_query_generator, create_synthesizer
 
 load_dotenv()
+
+logger = get_logger("agent")
 
 
 def create_research_agent(
@@ -36,12 +39,20 @@ def create_research_agent(
     model_name = model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     model = ChatOpenAI(model=model_name, temperature=0.7)
 
+    logger.info(
+        "agent_created",
+        model=model_name,
+        max_iterations=max_iterations,
+    )
+
     deep_research = create_deep_research_tool(model)
     generate_queries = create_query_generator(model)
     synthesize = create_synthesizer(model)
 
     def initialize(state: ResearchState) -> ResearchState:
         """Initialize the research state from the user's question."""
+        logger.info("node_enter", node="initialize")
+
         messages = state.get("messages", [])
         question = state.get("question", "")
 
@@ -51,6 +62,13 @@ def create_research_agent(
                 question = last_message.content
             elif hasattr(last_message, "content"):
                 question = last_message.content
+
+        logger.info(
+            "node_exit",
+            node="initialize",
+            question_length=len(question),
+            question_preview=question[:80] + "..." if len(question) > 80 else question,
+        )
 
         return {
             "question": question,
@@ -63,17 +81,57 @@ def create_research_agent(
 
     def generate_queries_node(state: ResearchState) -> ResearchState:
         """Generate search queries for the research question."""
+        iteration = state["iteration"] + 1
+        logger.info(
+            "node_enter",
+            node="generate_queries",
+            iteration=iteration,
+        )
+
         question = state["question"]
-        queries = generate_queries(question, num_queries=3)
-        return {"search_queries": queries, "iteration": state["iteration"] + 1}
+
+        with log_duration(logger, "query_generation", iteration=iteration):
+            queries = generate_queries(question, num_queries=3)
+
+        logger.info(
+            "node_exit",
+            node="generate_queries",
+            iteration=iteration,
+            query_count=len(queries),
+            queries=queries,
+        )
+
+        return {"search_queries": queries, "iteration": iteration}
 
     def execute_research(state: ResearchState) -> ResearchState:
         """Execute deep research for each query."""
         queries = state["search_queries"]
+        iteration = state["iteration"]
+
+        logger.info(
+            "node_enter",
+            node="execute_research",
+            iteration=iteration,
+            query_count=len(queries),
+        )
+
         sections: list[ResearchSection] = []
 
-        for query in queries:
-            result = deep_research.invoke(query)
+        for i, query in enumerate(queries, 1):
+            logger.info(
+                "research_query_start",
+                iteration=iteration,
+                query_index=i,
+                query_total=len(queries),
+                query=query,
+            )
+
+            with log_duration(
+                logger, "research_query", iteration=iteration, query_index=i
+            ) as result_ctx:
+                result = deep_research.invoke(query)
+                result_ctx["content_length"] = len(result)
+
             section: ResearchSection = {
                 "topic": query,
                 "content": result,
@@ -82,13 +140,41 @@ def create_research_agent(
             sections.append(section)
 
         existing_sections = state.get("research_sections", [])
+        total_sections = len(existing_sections) + len(sections)
+
+        logger.info(
+            "node_exit",
+            node="execute_research",
+            iteration=iteration,
+            new_sections=len(sections),
+            total_sections=total_sections,
+        )
+
         return {"research_sections": existing_sections + sections}
 
     def synthesize_report(state: ResearchState) -> ResearchState:
         """Synthesize research sections into a final report."""
+        logger.info(
+            "node_enter",
+            node="synthesize",
+            total_sections=len(state.get("research_sections", [])),
+        )
+
         question = state["question"]
         sections = state["research_sections"]
-        report = synthesize(question, sections)
+
+        with log_duration(
+            logger, "synthesis", section_count=len(sections)
+        ) as result_ctx:
+            report = synthesize(question, sections)
+            result_ctx["report_length"] = len(report)
+
+        logger.info(
+            "node_exit",
+            node="synthesize",
+            report_length=len(report),
+        )
+
         return {
             "final_report": report,
             "messages": [AIMessage(content=report)],
@@ -98,15 +184,28 @@ def create_research_agent(
         """Determine if more research iterations are needed."""
         iteration = state["iteration"]
         max_iter = state["max_iterations"]
+        sections = state.get("research_sections", [])
 
         if iteration >= max_iter:
-            return "synthesize"
+            decision = "synthesize"
+            reason = f"max iterations reached ({iteration}/{max_iter})"
+        elif len(sections) >= 6:
+            decision = "synthesize"
+            reason = f"sufficient sections collected ({len(sections)})"
+        else:
+            decision = "continue"
+            reason = f"continuing research (iteration {iteration}/{max_iter}, sections {len(sections)})"
 
-        sections = state.get("research_sections", [])
-        if len(sections) >= 6:
-            return "synthesize"
+        logger.info(
+            "routing_decision",
+            decision=decision,
+            reason=reason,
+            iteration=iteration,
+            max_iterations=max_iter,
+            section_count=len(sections),
+        )
 
-        return "continue"
+        return decision
 
     graph = StateGraph(ResearchState)
 
@@ -138,16 +237,29 @@ def run_research(question: str, max_iterations: int = 2) -> str:
     Returns:
         The final research report as a string.
     """
-    agent = create_research_agent(max_iterations=max_iterations)
-    result = agent.invoke(
-        {
-            "messages": [HumanMessage(content=question)],
-            "question": question,
-            "search_queries": [],
-            "research_sections": [],
-            "final_report": "",
-            "iteration": 0,
-            "max_iterations": max_iterations,
-        }
+    logger.info(
+        "research_start",
+        question_length=len(question),
+        max_iterations=max_iterations,
     )
+
+    agent = create_research_agent(max_iterations=max_iterations)
+
+    with log_duration(
+        logger, "research_complete", max_iterations=max_iterations
+    ) as result_ctx:
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content=question)],
+                "question": question,
+                "search_queries": [],
+                "research_sections": [],
+                "final_report": "",
+                "iteration": 0,
+                "max_iterations": max_iterations,
+            }
+        )
+        result_ctx["report_length"] = len(result["final_report"])
+        result_ctx["total_sections"] = len(result.get("research_sections", []))
+
     return result["final_report"]

@@ -1,12 +1,19 @@
 """Main entry point for the deep research agent."""
 
+import os
 import sys
 
 from src.deep_research import run_research
+from src.deep_research.logging import configure_logging
 
 
 def main():
     """Run the deep research agent with a question from command line or interactively."""
+    # Configure logging from environment or default to INFO
+    log_level = os.getenv("LOG_LEVEL", "INFO")
+    json_logs = os.getenv("LOG_FORMAT", "").lower() == "json"
+    configure_logging(level=log_level, json_logs=json_logs)
+
     if len(sys.argv) > 1:
         question = " ".join(sys.argv[1:])
     else:
