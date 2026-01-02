@@ -3,7 +3,7 @@
 import os
 import sys
 
-from src.deep_research import run_research
+from src.deep_research import run_research_with_evaluation
 from src.deep_research.logging import configure_logging
 
 
@@ -29,11 +29,24 @@ def main():
     print("-" * 40)
 
     try:
-        report = run_research(question, max_iterations=2)
+        result = run_research_with_evaluation(question, max_iterations=2)
         print("\n" + "=" * 40)
         print("RESEARCH REPORT")
         print("=" * 40)
-        print(report)
+        print(result.report)
+
+        # Display evaluation results
+        if result.evaluations:
+            print("\n" + "=" * 40)
+            print("EVALUATION RESULTS")
+            print("=" * 40)
+            for eval_result in result.evaluations:
+                status = "PASS" if eval_result.passed else "FAIL"
+                print(f"  {eval_result.name}: {eval_result.score:.2f} [{status}]")
+
+            pass_count = sum(1 for e in result.evaluations if e.passed)
+            total = len(result.evaluations)
+            print(f"\nOverall: {pass_count}/{total} evaluations passed")
     except Exception as e:
         print(f"Error during research: {e}")
         sys.exit(1)

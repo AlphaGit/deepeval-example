@@ -19,7 +19,8 @@ The established workflow for this project is:
 1. User requests a change
 2. Claude performs the change and tests it (testing is mandatory)
 3. Claude asks user to review the changes
-4. Once user approves without feedback, Claude commits the changes to the repository
+4. **Claude must always ask for permission before committing** - never commit without explicit user approval
+5. Once user approves without feedback, Claude commits the changes to the repository
 
 ## Application Usage
 

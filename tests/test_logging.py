@@ -2,8 +2,6 @@
 
 import time
 
-import structlog
-
 from src.deep_research.logging import (
     configure_logging,
     get_logger,
