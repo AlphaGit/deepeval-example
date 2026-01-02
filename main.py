@@ -29,7 +29,12 @@ def main():
     print("-" * 40)
 
     try:
-        result = run_research_with_evaluation(question, max_iterations=2)
+        result = run_research_with_evaluation(
+            question,
+            max_iterations=2,
+            include_llm_evaluators=True,
+            include_reasoning_evaluators=True,
+        )
         print("\n" + "=" * 40)
         print("RESEARCH REPORT")
         print("=" * 40)
@@ -41,12 +46,26 @@ def main():
             print("EVALUATION RESULTS")
             print("=" * 40)
             for eval_result in result.evaluations:
-                status = "PASS" if eval_result.passed else "FAIL"
-                print(f"  {eval_result.name}: {eval_result.score:.2f} [{status}]")
+                status = "✓ PASS" if eval_result.passed else "✗ FAIL"
+                print(
+                    f"  {eval_result.name:20s}: {eval_result.score:.2f} [{status}]"
+                )
+                # Show reason for reasoning evaluators
+                if eval_result.name in ["plan_quality", "plan_adherence"]:
+                    reason = eval_result.metadata.get("reason", "")
+                    if reason:
+                        print(f"    → {reason}")
 
             pass_count = sum(1 for e in result.evaluations if e.passed)
             total = len(result.evaluations)
-            print(f"\nOverall: {pass_count}/{total} evaluations passed")
+            print(f"\n  Overall: {pass_count}/{total} evaluations passed")
+
+            # Show MLflow info
+            print("\n" + "=" * 40)
+            print("📊 View detailed results in MLflow UI:")
+            print("  Run: mlflow ui")
+            print("  Then open: http://localhost:5000")
+            print("=" * 40)
     except Exception as e:
         print(f"Error during research: {e}")
         sys.exit(1)

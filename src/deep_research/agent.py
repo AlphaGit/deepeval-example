@@ -237,6 +237,25 @@ def run_research(question: str, max_iterations: int = 2) -> str:
     Returns:
         The final research report as a string.
     """
+    result = run_research_with_state(question, max_iterations=max_iterations)
+    return result["final_report"]
+
+
+def run_research_with_state(question: str, max_iterations: int = 2) -> ResearchState:
+    """Run a research query and return the full state including plan and execution.
+
+    This function returns the complete agent state, which is useful for
+    reasoning evaluations that need access to:
+    - search_queries: The agent's plan (what it intended to research)
+    - research_sections: The execution results (what was actually researched)
+
+    Args:
+        question: The research question to investigate.
+        max_iterations: Maximum research iterations.
+
+    Returns:
+        The full ResearchState dictionary containing all agent state.
+    """
     logger.info(
         "research_start",
         question_length=len(question),
@@ -262,4 +281,4 @@ def run_research(question: str, max_iterations: int = 2) -> str:
         result_ctx["report_length"] = len(result["final_report"])
         result_ctx["total_sections"] = len(result.get("research_sections", []))
 
-    return result["final_report"]
+    return result

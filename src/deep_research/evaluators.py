@@ -401,12 +401,302 @@ def run_evaluators(
     return results
 
 
+class ReasoningEvaluator(Evaluator):
+    """Base class for reasoning evaluators that assess agent planning and execution.
+
+    These evaluators require additional context beyond just the question and report:
+    - plan: The agent's planned actions (e.g., search queries)
+    - execution: The actual actions taken (e.g., research sections)
+    """
+
+    def evaluate(
+        self,
+        question: str,
+        report: str,
+        plan: list[str] | None = None,
+        execution: list[dict[str, Any]] | None = None,
+    ) -> EvaluatorResult:
+        """Evaluate with reasoning context.
+
+        Args:
+            question: The original research question.
+            report: The generated research report.
+            plan: The agent's plan (e.g., search queries).
+            execution: The execution results (e.g., research sections).
+
+        Returns:
+            EvaluatorResult with score, pass/fail, and reasoning.
+        """
+        pass
+
+
+class PlanQualityEvaluator(ReasoningEvaluator):
+    """Evaluates if the agent's plan is logical, complete, and efficient.
+
+    Assesses whether the research queries/plan adequately cover the research
+    question with appropriate scope and granularity.
+    """
+
+    name = "plan_quality"
+
+    def __init__(
+        self,
+        model: ChatOpenAI | None = None,
+        threshold: float = 0.7,
+    ):
+        """Initialize the plan quality evaluator.
+
+        Args:
+            model: ChatOpenAI model to use for evaluation.
+            threshold: Score threshold to pass.
+        """
+        self.model = model
+        self.threshold = threshold
+
+    def evaluate(
+        self,
+        question: str,
+        report: str,
+        plan: list[str] | None = None,
+        execution: list[dict[str, Any]] | None = None,
+    ) -> EvaluatorResult:
+        if plan is None:
+            return EvaluatorResult(
+                score=0.0,
+                passed=False,
+                reason="No plan provided for evaluation",
+                metadata={"error": "missing_plan"},
+            )
+
+        if self.model is None:
+            import os
+
+            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            self.model = ChatOpenAI(model=model_name, temperature=0)
+
+        plan_str = "\n".join(f"- {query}" for query in plan)
+
+        prompt = f"""You are an expert evaluator assessing the quality of a research plan.
+
+Original Research Question: {question}
+
+Research Plan (Search Queries):
+{plan_str}
+
+Evaluate the quality of this research plan on a scale of 0.0 to 1.0:
+- 1.0: Plan is comprehensive, logical, and covers all key aspects
+- 0.8: Plan is well-structured with good coverage, minor gaps
+- 0.6: Plan covers main points but missing some perspectives
+- 0.4: Plan is incomplete or has logical issues
+- 0.2: Plan is poorly structured or overly narrow
+- 0.0: Plan is irrelevant or completely inadequate
+
+Consider these criteria:
+1. Logical coherence: Do the queries build a complete picture?
+2. Coverage: Are all key aspects of the question addressed?
+3. Efficiency: Are queries focused without unnecessary overlap?
+4. Granularity: Is the level of detail appropriate?
+5. Dependencies: Are there clear research priorities?
+
+Respond with ONLY a JSON object in this exact format:
+{{"score": <float>, "reason": "<brief explanation>", "strengths": ["strength1", "strength2"], "weaknesses": ["weakness1", "weakness2"]}}"""
+
+        try:
+            response = self.model.invoke(prompt)
+            import json
+
+            content = response.content.strip()
+            if content.startswith("```"):
+                content = re.sub(r"```(?:json)?\n?", "", content)
+                content = content.strip()
+
+            result = json.loads(content)
+            score = float(result.get("score", 0.5))
+            reason = result.get("reason", "No reason provided")
+            strengths = result.get("strengths", [])
+            weaknesses = result.get("weaknesses", [])
+
+            passed = score >= self.threshold
+
+            logger.debug(
+                "plan_quality_evaluation",
+                score=score,
+                passed=passed,
+                plan_size=len(plan),
+            )
+
+            return EvaluatorResult(
+                score=score,
+                passed=passed,
+                reason=reason,
+                metadata={
+                    "plan_size": len(plan),
+                    "strengths": strengths,
+                    "weaknesses": weaknesses,
+                    "model_response": content[:500],
+                },
+            )
+
+        except Exception as e:
+            logger.error("plan_quality_evaluation_error", error=str(e))
+            return EvaluatorResult(
+                score=0.5,
+                passed=False,
+                reason=f"Evaluation failed: {str(e)}",
+                metadata={"error": str(e)},
+            )
+
+
+class PlanAdherenceEvaluator(ReasoningEvaluator):
+    """Evaluates if the agent follows its plan during execution.
+
+    Assesses whether the research execution (sections) aligns with
+    the planned queries and doesn't deviate from the intended strategy.
+    """
+
+    name = "plan_adherence"
+
+    def __init__(
+        self,
+        model: ChatOpenAI | None = None,
+        threshold: float = 0.7,
+    ):
+        """Initialize the plan adherence evaluator.
+
+        Args:
+            model: ChatOpenAI model to use for evaluation.
+            threshold: Score threshold to pass.
+        """
+        self.model = model
+        self.threshold = threshold
+
+    def evaluate(
+        self,
+        question: str,
+        report: str,
+        plan: list[str] | None = None,
+        execution: list[dict[str, Any]] | None = None,
+    ) -> EvaluatorResult:
+        if plan is None:
+            return EvaluatorResult(
+                score=0.0,
+                passed=False,
+                reason="No plan provided for evaluation",
+                metadata={"error": "missing_plan"},
+            )
+
+        if execution is None:
+            return EvaluatorResult(
+                score=0.0,
+                passed=False,
+                reason="No execution data provided for evaluation",
+                metadata={"error": "missing_execution"},
+            )
+
+        if self.model is None:
+            import os
+
+            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            self.model = ChatOpenAI(model=model_name, temperature=0)
+
+        plan_str = "\n".join(f"- {query}" for query in plan)
+
+        # Format execution data (research sections)
+        execution_str = ""
+        for i, section in enumerate(execution, 1):
+            topic = section.get("topic", "Unknown topic")
+            content_preview = section.get("content", "")[:200]
+            execution_str += (
+                f"\n{i}. Topic: {topic}\n   Content preview: {content_preview}...\n"
+            )
+
+        prompt = f"""You are an expert evaluator assessing if an AI agent followed its research plan.
+
+Original Research Question: {question}
+
+Research Plan (Planned Queries):
+{plan_str}
+
+Execution Results (Research Sections):
+{execution_str}
+
+Evaluate how well the execution adheres to the plan on a scale of 0.0 to 1.0:
+- 1.0: Perfect adherence - all planned topics researched, no deviations
+- 0.8: Strong adherence - most topics covered, minor reasonable additions
+- 0.6: Moderate adherence - some topics missed or significant additions
+- 0.4: Weak adherence - notable deviations from plan
+- 0.2: Poor adherence - execution barely follows plan
+- 0.0: No adherence - completely different from plan
+
+Consider:
+1. Coverage: Were all planned queries researched?
+2. Alignment: Do the section topics match the planned queries?
+3. Deviations: Are there unexplained off-topic sections?
+4. Completeness: Did execution fulfill the plan's intent?
+
+Respond with ONLY a JSON object in this exact format:
+{{"score": <float>, "reason": "<brief explanation>", "covered_queries": <int>, "total_queries": <int>, "deviations": ["deviation1"]}}"""
+
+        try:
+            response = self.model.invoke(prompt)
+            import json
+
+            content = response.content.strip()
+            if content.startswith("```"):
+                content = re.sub(r"```(?:json)?\n?", "", content)
+                content = content.strip()
+
+            result = json.loads(content)
+            score = float(result.get("score", 0.5))
+            reason = result.get("reason", "No reason provided")
+            covered = result.get("covered_queries", len(execution))
+            total = result.get("total_queries", len(plan))
+            deviations = result.get("deviations", [])
+
+            passed = score >= self.threshold
+
+            logger.debug(
+                "plan_adherence_evaluation",
+                score=score,
+                passed=passed,
+                covered_queries=covered,
+                total_queries=total,
+            )
+
+            return EvaluatorResult(
+                score=score,
+                passed=passed,
+                reason=reason,
+                metadata={
+                    "plan_size": len(plan),
+                    "execution_size": len(execution),
+                    "covered_queries": covered,
+                    "total_queries": total,
+                    "deviations": deviations,
+                    "model_response": content[:500],
+                },
+            )
+
+        except Exception as e:
+            logger.error("plan_adherence_evaluation_error", error=str(e))
+            return EvaluatorResult(
+                score=0.5,
+                passed=False,
+                reason=f"Evaluation failed: {str(e)}",
+                metadata={"error": str(e)},
+            )
+
+
 # Convenience function to get default evaluators
-def get_default_evaluators(include_llm: bool = False) -> list[Evaluator]:
+def get_default_evaluators(
+    include_llm: bool = False,
+    include_reasoning: bool = False,
+) -> list[Evaluator]:
     """Get a list of default evaluators.
 
     Args:
         include_llm: Whether to include LLM-based evaluators.
+        include_reasoning: Whether to include reasoning evaluators.
 
     Returns:
         List of Evaluator instances.
@@ -424,4 +714,61 @@ def get_default_evaluators(include_llm: bool = False) -> list[Evaluator]:
             ]
         )
 
+    if include_reasoning:
+        evaluators.extend(
+            [
+                PlanQualityEvaluator(),
+                PlanAdherenceEvaluator(),
+            ]
+        )
+
     return evaluators
+
+
+def run_evaluators_with_reasoning(
+    question: str,
+    report: str,
+    evaluators: list[Evaluator] | None = None,
+    plan: list[str] | None = None,
+    execution: list[dict[str, Any]] | None = None,
+) -> list[EvaluatorResult]:
+    """Run multiple evaluators on a research report, including reasoning evaluators.
+
+    Args:
+        question: The original research question.
+        report: The generated research report.
+        evaluators: List of evaluators to run. Defaults to basic evaluators.
+        plan: The agent's plan (search queries) for reasoning evaluators.
+        execution: The execution results (research sections) for reasoning evaluators.
+
+    Returns:
+        List of EvaluatorResult objects.
+    """
+    if evaluators is None:
+        evaluators = [
+            LengthEvaluator(),
+            StructureEvaluator(),
+        ]
+
+    results = []
+    for evaluator in evaluators:
+        logger.info("running_evaluator", evaluator=evaluator.name)
+
+        # Check if this is a reasoning evaluator that needs extra context
+        if isinstance(evaluator, ReasoningEvaluator):
+            result = evaluator.evaluate(
+                question, report, plan=plan, execution=execution
+            )
+        else:
+            result = evaluator.evaluate(question, report)
+
+        results.append(result)
+
+        logger.info(
+            "evaluator_complete",
+            evaluator=evaluator.name,
+            score=result.score,
+            passed=result.passed,
+        )
+
+    return results

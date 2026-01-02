@@ -125,10 +125,21 @@ def track_research_run(
                     1.0 if eval_result.passed else 0.0,
                 )
 
-                # Log evaluation metadata as params if present
+                # Log evaluation metadata
                 for key, value in eval_result.metadata.items():
                     if isinstance(value, (int, float)):
                         mlflow.log_metric(f"eval_{eval_result.name}_{key}", value)
+                    elif isinstance(value, str):
+                        # Log string metadata as params (truncate to MLflow limit)
+                        mlflow.log_param(f"eval_{eval_result.name}_{key}", value[:250])
+                    elif isinstance(value, (list, dict)):
+                        # Log complex types as JSON params
+                        import json
+
+                        mlflow.log_param(
+                            f"eval_{eval_result.name}_{key}",
+                            json.dumps(value)[:250],
+                        )
 
             # Log artifacts
             if result.report:

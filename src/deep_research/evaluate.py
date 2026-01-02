@@ -1,7 +1,12 @@
 """Integrated research evaluation with MLflow tracking."""
 
-from .agent import run_research
-from .evaluators import Evaluator, get_default_evaluators, run_evaluators
+from .agent import run_research_with_state
+from .evaluators import (
+    Evaluator,
+    ReasoningEvaluator,
+    get_default_evaluators,
+    run_evaluators_with_reasoning,
+)
 from .logging import get_logger
 from .tracking import (
     ResearchResult,
@@ -18,6 +23,7 @@ def run_research_with_evaluation(
     max_iterations: int = 2,
     evaluators: list[Evaluator] | None = None,
     include_llm_evaluators: bool = False,
+    include_reasoning_evaluators: bool = False,
     experiment_name: str = "deep-research",
     run_name: str | None = None,
     tags: dict[str, str] | None = None,
@@ -34,6 +40,8 @@ def run_research_with_evaluation(
         max_iterations: Maximum research iterations.
         evaluators: Custom evaluators to use. If None, uses default evaluators.
         include_llm_evaluators: Whether to include LLM-based evaluators in defaults.
+        include_reasoning_evaluators: Whether to include reasoning evaluators
+            (PlanQuality, PlanAdherence) in defaults.
         experiment_name: MLflow experiment name.
         run_name: Optional name for the MLflow run.
         tags: Optional tags to add to the run.
@@ -47,6 +55,7 @@ def run_research_with_evaluation(
         >>> result = run_research_with_evaluation(
         ...     "What are the benefits of renewable energy?",
         ...     include_llm_evaluators=True,
+        ...     include_reasoning_evaluators=True,
         ... )
         >>> print(f"Report length: {result.report_length}")
         >>> for eval in result.evaluations:
@@ -59,25 +68,45 @@ def run_research_with_evaluation(
 
     # Get evaluators
     if evaluators is None:
-        evaluators = get_default_evaluators(include_llm=include_llm_evaluators)
+        evaluators = get_default_evaluators(
+            include_llm=include_llm_evaluators,
+            include_reasoning=include_reasoning_evaluators,
+        )
+
+    # Check if we have reasoning evaluators that need extra context
+    has_reasoning_evaluators = any(
+        isinstance(e, ReasoningEvaluator) for e in evaluators
+    )
 
     logger.info(
         "research_with_evaluation_start",
         question_length=len(question),
         evaluator_count=len(evaluators),
+        has_reasoning_evaluators=has_reasoning_evaluators,
     )
 
     with track_research_run(question, run_name=run_name, tags=tags) as result:
-        # Run the research
-        report = run_research(question, max_iterations=max_iterations)
+        # Run the research and get full state
+        agent_state = run_research_with_state(question, max_iterations=max_iterations)
+        report = agent_state["final_report"]
+
+        # Extract plan and execution data for reasoning evaluators
+        plan = agent_state.get("search_queries", [])
+        execution = agent_state.get("research_sections", [])
 
         # Populate result
         result.report = report
         result.report_length = len(report)
+        result.iteration_count = agent_state.get("iteration", 0)
+        result.section_count = len(execution)
         result.metadata["max_iterations"] = max_iterations
+        result.metadata["plan_queries"] = plan
+        result.metadata["section_topics"] = [s.get("topic", "") for s in execution]
 
-        # Run evaluators
-        eval_results = run_evaluators(question, report, evaluators)
+        # Run evaluators with reasoning context
+        eval_results = run_evaluators_with_reasoning(
+            question, report, evaluators, plan=plan, execution=execution
+        )
 
         # Log each evaluation
         for evaluator, eval_result in zip(evaluators, eval_results, strict=True):
@@ -105,6 +134,9 @@ def evaluate_report(
     report: str,
     evaluators: list[Evaluator] | None = None,
     include_llm_evaluators: bool = False,
+    include_reasoning_evaluators: bool = False,
+    plan: list[str] | None = None,
+    execution: list[dict] | None = None,
     track: bool = True,
     experiment_name: str = "deep-research-evaluation",
     enable_tracing: bool = True,
@@ -119,6 +151,10 @@ def evaluate_report(
         report: The research report to evaluate.
         evaluators: Custom evaluators to use. If None, uses default evaluators.
         include_llm_evaluators: Whether to include LLM-based evaluators in defaults.
+        include_reasoning_evaluators: Whether to include reasoning evaluators
+            (PlanQuality, PlanAdherence) in defaults.
+        plan: The agent's plan (search queries) for reasoning evaluators.
+        execution: The execution results (research sections) for reasoning evaluators.
         track: Whether to track the evaluation in MLflow.
         experiment_name: MLflow experiment name.
         enable_tracing: Whether to enable LLM tracing (default True).
@@ -127,13 +163,16 @@ def evaluate_report(
         ResearchResult with evaluation results.
     """
     if evaluators is None:
-        evaluators = get_default_evaluators(include_llm=include_llm_evaluators)
+        evaluators = get_default_evaluators(
+            include_llm=include_llm_evaluators,
+            include_reasoning=include_reasoning_evaluators,
+        )
 
     result = ResearchResult(
         question=question,
         report=report,
         iteration_count=0,
-        section_count=0,
+        section_count=len(execution) if execution else 0,
         report_length=len(report),
     )
 
@@ -145,8 +184,17 @@ def evaluate_report(
         with track_research_run(question, run_name="evaluation-only") as tracked_result:
             tracked_result.report = report
             tracked_result.report_length = len(report)
+            if plan:
+                tracked_result.metadata["plan_queries"] = plan
+            if execution:
+                tracked_result.section_count = len(execution)
+                tracked_result.metadata["section_topics"] = [
+                    s.get("topic", "") for s in execution
+                ]
 
-            eval_results = run_evaluators(question, report, evaluators)
+            eval_results = run_evaluators_with_reasoning(
+                question, report, evaluators, plan=plan, execution=execution
+            )
 
             for evaluator, eval_result in zip(evaluators, eval_results, strict=True):
                 log_evaluation(
@@ -160,7 +208,9 @@ def evaluate_report(
 
             result = tracked_result
     else:
-        eval_results = run_evaluators(question, report, evaluators)
+        eval_results = run_evaluators_with_reasoning(
+            question, report, evaluators, plan=plan, execution=execution
+        )
 
         for evaluator, eval_result in zip(evaluators, eval_results, strict=True):
             from .tracking import EvaluationResult

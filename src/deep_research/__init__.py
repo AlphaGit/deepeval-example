@@ -1,14 +1,18 @@
-from .agent import create_research_agent, run_research
+from .agent import create_research_agent, run_research, run_research_with_state
 from .evaluate import evaluate_report, run_research_with_evaluation
 from .evaluators import (
     CompletenessEvaluator,
     Evaluator,
     EvaluatorResult,
     LengthEvaluator,
+    PlanAdherenceEvaluator,
+    PlanQualityEvaluator,
+    ReasoningEvaluator,
     RelevanceEvaluator,
     StructureEvaluator,
     get_default_evaluators,
     run_evaluators,
+    run_evaluators_with_reasoning,
 )
 from .logging import configure_logging, get_logger
 from .state import ResearchState
@@ -26,6 +30,7 @@ __all__ = [
     # Agent
     "create_research_agent",
     "run_research",
+    "run_research_with_state",
     "ResearchState",
     # Logging
     "configure_logging",
@@ -45,7 +50,11 @@ __all__ = [
     "StructureEvaluator",
     "RelevanceEvaluator",
     "CompletenessEvaluator",
+    "ReasoningEvaluator",
+    "PlanQualityEvaluator",
+    "PlanAdherenceEvaluator",
     "run_evaluators",
+    "run_evaluators_with_reasoning",
     "get_default_evaluators",
     # Integrated evaluation
     "run_research_with_evaluation",
