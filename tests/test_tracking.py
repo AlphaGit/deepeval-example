@@ -18,9 +18,10 @@ from src.deep_research.tracking import (
 
 @pytest.fixture
 def temp_mlflow_dir():
-    """Create a temporary directory for MLflow tracking."""
+    """Create a temporary SQLite database for MLflow tracking."""
     temp_dir = tempfile.mkdtemp()
-    yield temp_dir
+    db_path = f"{temp_dir}/mlflow.db"
+    yield f"sqlite:///{db_path}"
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 

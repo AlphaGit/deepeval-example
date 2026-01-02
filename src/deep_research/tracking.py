@@ -49,12 +49,12 @@ def configure_tracking(
     Args:
         experiment_name: Name of the MLflow experiment.
         tracking_uri: MLflow tracking server URI. Defaults to MLFLOW_TRACKING_URI
-                     env var or local file storage.
+                     env var or SQLite database.
         enable_tracing: Whether to enable LangChain tracing for LLM calls.
     """
     global _tracing_enabled
 
-    uri = tracking_uri or os.getenv("MLFLOW_TRACKING_URI", "mlruns")
+    uri = tracking_uri or os.getenv("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
     mlflow.set_tracking_uri(uri)
     mlflow.set_experiment(experiment_name)
 
