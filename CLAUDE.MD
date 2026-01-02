@@ -1,108 +1,90 @@
-# Claude Learning Context
+# Claude Development Guide
 
-This file tracks important learnings and context provided by the user throughout the project.
+This file contains instructions and context for AI agents developing this project.
 
-## Instructions
-- Every new learning provided by the user should be included in this file unless explicitly told to avoid it
-- This helps maintain context and consistency across sessions
-- Organize learnings by topic or chronologically as appropriate
+## Development Workflow
 
-## Learnings
-
-### Project Setup (2026-01-01)
-- Project initialized with Python 3.12 using pyenv
-- Using uv for package management
-- Git repository initialized
-
-### Development Workflow (2026-01-01)
 The established workflow for this project is:
 1. User requests a change
-2. Claude performs the change and tests it (testing is mandatory)
-3. Claude asks user to review the changes
-4. **Claude must always ask for permission before committing** - never commit without explicit user approval
-5. Once user approves without feedback, Claude commits the changes to the repository
+2. Perform the change and test it (testing is mandatory)
+3. Ask user to review the changes
+4. **Always ask for permission before committing** - never commit without explicit user approval
+5. Once user approves without feedback, commit the changes to the repository
 
-## Application Usage
+## Project Overview
 
-### Setup
+This is a LangGraph-based deep research agent with integrated evaluation, MLflow tracking, and structured logging.
+
+### Tech Stack
+- Python 3.12 (managed with pyenv)
+- Package manager: uv
+- Agent framework: LangGraph
+- LLM provider: OpenAI
+- Tracking: MLflow (SQLite backend)
+- Logging: structlog
+
+### Core Architecture Patterns
+
+**State Management**: All agent state is defined in `state.py` using TypedDict for type safety.
+
+**Evaluation System**: Three-tier evaluator architecture:
+- Basic evaluators (synchronous, rule-based): Length, Structure
+- LLM evaluators (async, model-based): Relevance, Completeness
+- Reasoning evaluators (require plan/execution context): PlanQuality, PlanAdherence
+
+**Observability**: Every operation should be observable:
+- Use structured logging via `get_logger(__name__)` from `logging.py`
+- MLflow automatically tracks experiments via `track_research_run` context manager
+- LLM traces are captured automatically when tracing is enabled
+
+## Development Guidelines
+
+### Adding New Features
+
+**New Evaluators**:
+- Inherit from `Evaluator` or `ReasoningEvaluator` in `evaluators.py`
+- Follow existing evaluator patterns for structure
+- Add tests to `tests/test_evaluators.py`
+- Export from `__init__.py`
+
+**New Agent Nodes**:
+- Add to `agent.py` following LangGraph patterns
+- Update state in `state.py` if new fields are needed
+- Add prompts to `prompts.py` for consistency
+- Use structured logging throughout
+
+**MLflow Integration**:
+- Use `track_research_run()` context manager for any research operations
+- MLflow uses SQLite backend (mlflow.db) not filesystem
+- All LLM calls are automatically traced when enabled
+
+### Code Quality
+
+**Testing**: All tests must pass before committing
 ```bash
-# Install dependencies
-uv sync --extra dev
-
-# Copy environment template and add your OpenAI API key
-cp .env.example .env
-# Edit .env and set OPENAI_API_KEY=your-key-here
+uv run pytest                    # Run all tests
+uv run pytest -v                 # Verbose output
+uv run pytest tests/test_*.py    # Specific test file
 ```
 
-### Running the Application
+**Linting**: Use Ruff for formatting and linting
 ```bash
-# Run with a question as argument
-uv run python main.py "What are the key principles of machine learning?"
-
-# Run interactively (will prompt for question)
-uv run python main.py
+uv run ruff check .              # Check for issues
+uv run ruff check --fix .        # Auto-fix issues
+uv run ruff format .             # Format code
 ```
 
-### Programmatic Usage
-```python
-from src.deep_research import run_research
+**Pre-commit Hooks**: Automatically run on commit
+- Ruff linter with auto-fix
+- Ruff formatter
+- Pytest (all tests must pass)
+- Install once with: `uv run pre-commit install`
 
-report = run_research("Your research question", max_iterations=2)
-print(report)
-```
+### Important Conventions
 
-## Testing
-
-### Run All Tests
-```bash
-uv run pytest
-```
-
-### Run Tests with Verbose Output
-```bash
-uv run pytest -v
-```
-
-### Run Specific Test File
-```bash
-uv run pytest tests/test_agent.py -v
-```
-
-### Run Tests with Coverage (if coverage is installed)
-```bash
-uv run pytest --cov=src/deep_research
-```
-
-## Linting
-
-### Run Ruff Linter
-```bash
-uv run ruff check .
-```
-
-### Run Ruff Formatter
-```bash
-uv run ruff format .
-```
-
-### Auto-fix Linting Issues
-```bash
-uv run ruff check --fix .
-```
-
-## Pre-commit Hooks
-
-Pre-commit hooks are configured to run automatically on `git commit`. They run:
-1. Ruff linter (with auto-fix)
-2. Ruff formatter
-3. Pytest (all tests must pass)
-
-### Manual Pre-commit Run
-```bash
-uv run pre-commit run --all-files
-```
-
-### Install Pre-commit Hooks (first time setup)
-```bash
-uv run pre-commit install
-```
+- Use structured logging: `logger = get_logger(__name__)`
+- Type hints required for all function signatures
+- Docstrings for all public functions and classes
+- Tests are mandatory for all new features
+- Follow existing patterns in the codebase
+- Export new public APIs from `__init__.py`
