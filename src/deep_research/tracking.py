@@ -141,16 +141,33 @@ def track_research_run(
                     if isinstance(value, (int, float)):
                         mlflow.log_metric(f"eval_{eval_result.name}_{key}", value)
                     elif isinstance(value, str):
-                        # Log string metadata as params (truncate to MLflow limit)
-                        mlflow.log_param(f"eval_{eval_result.name}_{key}", value[:250])
+                        # For detailed explanations, log as artifacts instead of params
+                        if "explanation" in key and len(value) > 250:
+                            mlflow.log_text(
+                                value,
+                                f"eval_{eval_result.name}_{key}.txt",
+                            )
+                        else:
+                            # Log string metadata as params (truncate to MLflow limit)
+                            mlflow.log_param(
+                                f"eval_{eval_result.name}_{key}", value[:250]
+                            )
                     elif isinstance(value, (list, dict)):
-                        # Log complex types as JSON params
+                        # Log complex types as JSON params or artifacts
                         import json
 
-                        mlflow.log_param(
-                            f"eval_{eval_result.name}_{key}",
-                            json.dumps(value)[:250],
-                        )
+                        json_str = json.dumps(value, indent=2)
+                        if len(json_str) > 250:
+                            # Log as artifact if too large
+                            mlflow.log_text(
+                                json_str,
+                                f"eval_{eval_result.name}_{key}.json",
+                            )
+                        else:
+                            mlflow.log_param(
+                                f"eval_{eval_result.name}_{key}",
+                                json_str,
+                            )
 
             # Log artifacts
             if result.report:

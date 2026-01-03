@@ -174,15 +174,18 @@ class TestGetDefaultEvaluators:
         """Test getting evaluators with reasoning ones."""
         evaluators = get_default_evaluators(include_reasoning=True)
 
-        assert len(evaluators) == 4
+        assert (
+            len(evaluators) == 5
+        )  # 2 base + 3 reasoning (PlanQuality, PlanAdherence, ReasoningTrace)
         assert any(e.name == "plan_quality" for e in evaluators)
         assert any(e.name == "plan_adherence" for e in evaluators)
+        assert any(e.name == "reasoning_trace" for e in evaluators)
 
     def test_get_default_evaluators_with_all(self):
         """Test getting all evaluators."""
         evaluators = get_default_evaluators(include_llm=True, include_reasoning=True)
 
-        assert len(evaluators) == 6
+        assert len(evaluators) == 7  # 2 base + 2 llm + 3 reasoning
         assert any(e.name == "length" for e in evaluators)
         assert any(e.name == "structure" for e in evaluators)
         assert any(e.name == "relevance" for e in evaluators)
@@ -442,3 +445,156 @@ In conclusion, the research shows important insights.
 
         assert len(results) == 2  # Default has 2 evaluators
         assert all(isinstance(r, EvaluatorResult) for r in results)
+
+
+class TestReasoningTraceEvaluator:
+    """Tests for ReasoningTraceEvaluator."""
+
+    def test_reasoning_trace_evaluator_without_plan(self):
+        """Test that evaluator fails gracefully without a plan."""
+        from src.deep_research.evaluators import ReasoningTraceEvaluator
+
+        evaluator = ReasoningTraceEvaluator()
+        execution = [{"topic": "Topic 1", "content": "Content", "tool_used": "llm"}]
+        result = evaluator.evaluate(
+            "test question", "test report", plan=None, execution=execution
+        )
+
+        assert result.score == 0.0
+        assert result.passed is False
+        assert "Missing plan or execution data" in result.reason
+        assert result.metadata.get("error") == "missing_context"
+
+    def test_reasoning_trace_evaluator_without_execution(self):
+        """Test that evaluator fails gracefully without execution data."""
+        from src.deep_research.evaluators import ReasoningTraceEvaluator
+
+        evaluator = ReasoningTraceEvaluator()
+        plan = ["Query 1", "Query 2"]
+        result = evaluator.evaluate(
+            "test question", "test report", plan=plan, execution=None
+        )
+
+        assert result.score == 0.0
+        assert result.passed is False
+        assert "Missing plan or execution data" in result.reason
+        assert result.metadata.get("error") == "missing_context"
+
+    def test_reasoning_trace_evaluator_is_reasoning_evaluator(self):
+        """Test that ReasoningTraceEvaluator is a ReasoningEvaluator."""
+        from src.deep_research.evaluators import (
+            ReasoningEvaluator,
+            ReasoningTraceEvaluator,
+        )
+
+        evaluator = ReasoningTraceEvaluator()
+        assert isinstance(evaluator, ReasoningEvaluator)
+        assert evaluator.name == "reasoning_trace"
+
+    @patch("src.deep_research.evaluators.ChatOpenAI")
+    def test_reasoning_trace_evaluator_with_data(self, mock_chat_openai):
+        """Test evaluator with valid plan and execution data."""
+        from src.deep_research.evaluators import ReasoningTraceEvaluator
+
+        mock_model = MagicMock()
+        mock_response = MagicMock()
+        # Mock a comprehensive evaluation response
+        mock_response.content = """{
+  "logical_coherence": {"score": 0.9, "explanation": "Queries follow logical progression"},
+  "goal_alignment": {"score": 0.85, "explanation": "All queries align with the research goal"},
+  "efficiency": {"score": 0.8, "explanation": "Minimal redundancy in queries"},
+  "reasoning_faithfulness": {"score": 0.9, "explanation": "Execution aligned with plan"},
+  "intermediate_state_accuracy": {"score": 0.85, "explanation": "Dependencies handled well"},
+  "hypothesis_generation": {"score": 0.8, "explanation": "Multiple perspectives explored"},
+  "overall_assessment": "Strong reasoning process with good coherence and goal alignment",
+  "strengths": ["Logical query progression", "Comprehensive coverage"],
+  "weaknesses": ["Could explore more alternatives"],
+  "recommendations": ["Consider broader perspectives"]
+}"""
+        mock_model.invoke.return_value = mock_response
+        mock_chat_openai.return_value = mock_model
+
+        evaluator = ReasoningTraceEvaluator(threshold=0.7)
+        plan = ["What is X?", "How does X work?", "What are benefits of X?"]
+        execution = [
+            {
+                "topic": "What is X?",
+                "content": "X is a technology...",
+                "tool_used": "web_search",
+                "source_count": 3,
+            },
+            {
+                "topic": "How does X work?",
+                "content": "X works by...",
+                "tool_used": "llm",
+                "source_count": 0,
+            },
+            {
+                "topic": "What are benefits of X?",
+                "content": "Benefits include...",
+                "tool_used": "web_search",
+                "source_count": 2,
+            },
+        ]
+
+        result = evaluator.evaluate(
+            "Tell me about X",
+            "A comprehensive report on X...",
+            plan=plan,
+            execution=execution,
+        )
+
+        # Check overall score (average of dimensions)
+        expected_score = (0.9 + 0.85 + 0.8 + 0.9 + 0.85 + 0.8) / 6
+        assert abs(result.score - expected_score) < 0.01
+        assert result.passed is True
+
+        # Check metadata contains all dimension scores
+        assert result.metadata["logical_coherence_score"] == 0.9
+        assert result.metadata["goal_alignment_score"] == 0.85
+        assert result.metadata["efficiency_score"] == 0.8
+        assert result.metadata["reasoning_faithfulness_score"] == 0.9
+        assert result.metadata["intermediate_state_accuracy_score"] == 0.85
+        assert result.metadata["hypothesis_generation_score"] == 0.8
+
+        # Check explanations are present
+        assert "logical progression" in result.metadata["logical_coherence_explanation"]
+        assert (
+            "align with the research goal"
+            in result.metadata["goal_alignment_explanation"]
+        )
+
+        # Check overall assessment and findings
+        assert "Strong reasoning process" in result.metadata["overall_assessment"]
+        assert result.metadata["strengths"] == [
+            "Logical query progression",
+            "Comprehensive coverage",
+        ]
+        assert result.metadata["weaknesses"] == ["Could explore more alternatives"]
+        assert result.metadata["recommendations"] == ["Consider broader perspectives"]
+
+        # Check context metrics
+        assert result.metadata["plan_size"] == 3
+        assert result.metadata["execution_steps"] == 3
+
+    @patch("src.deep_research.evaluators.ChatOpenAI")
+    def test_reasoning_trace_evaluator_handles_errors(self, mock_chat_openai):
+        """Test evaluator handles LLM errors gracefully."""
+        from src.deep_research.evaluators import ReasoningTraceEvaluator
+
+        mock_model = MagicMock()
+        mock_model.invoke.side_effect = Exception("API Error")
+        mock_chat_openai.return_value = mock_model
+
+        evaluator = ReasoningTraceEvaluator()
+        plan = ["Query 1"]
+        execution = [{"topic": "Query 1", "content": "Content", "tool_used": "llm"}]
+
+        result = evaluator.evaluate(
+            "question", "report", plan=plan, execution=execution
+        )
+
+        assert result.score == 0.5
+        assert result.passed is False
+        assert "Evaluation failed" in result.reason
+        assert "error" in result.metadata

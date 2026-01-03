@@ -41,8 +41,13 @@ def run_research_with_evaluation(
         max_iterations: Maximum research iterations.
         evaluators: Custom evaluators to use. If None, uses default evaluators.
         include_llm_evaluators: Whether to include LLM-based evaluators in defaults.
-        include_reasoning_evaluators: Whether to include reasoning evaluators
-            (PlanQuality, PlanAdherence) in defaults.
+        include_reasoning_evaluators: Whether to include reasoning evaluators in defaults.
+            This includes PlanQuality, PlanAdherence, and ReasoningTrace evaluators.
+            ReasoningTrace evaluator provides comprehensive assessment of the agent's
+            reasoning process based on principles from "Evaluating Reasoning and Planning
+            in Agentic LLM Systems".
+        include_web_search_evaluators: Whether to include web search evaluators
+            (SourceQuality, ToolSelection) in defaults.
         experiment_name: MLflow experiment name.
         run_name: Optional name for the MLflow run.
         tags: Optional tags to add to the run.

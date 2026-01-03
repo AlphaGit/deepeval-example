@@ -951,6 +951,284 @@ Respond with ONLY a JSON object in this exact format:
             )
 
 
+class ReasoningTraceEvaluator(ReasoningEvaluator):
+    """Comprehensive evaluator for agent reasoning and planning quality.
+
+    Based on principles from "Evaluating Reasoning and Planning in Agentic LLM Systems":
+    https://apxml.com/courses/agentic-llm-memory-architectures/chapter-6-evaluation-optimization-agentic-systems/evaluating-reasoning-planning
+
+    This evaluator assesses the internal reasoning process rather than just outputs.
+    As the article emphasizes: "A sound but slightly suboptimal answer demonstrates more
+    value than a correct answer derived through flawed reasoning."
+
+    Evaluates:
+    - Logical Coherence: Do successive thoughts follow rationally?
+    - Goal Alignment: Is reasoning directed toward the task objective?
+    - Efficiency: Does reasoning avoid unnecessary loops or redundancy?
+    - Reasoning Faithfulness: Do execution results align with the plan?
+    - Intermediate State Accuracy: Are necessary facts identified before synthesis?
+    - Hypothesis Generation: Are plausible alternatives explored systematically?
+
+    Provides detailed explanations suitable for MLflow reporting with:
+    - Individual dimension scores (0.0-1.0) with explanations
+    - Overall assessment summary
+    - Identified strengths and weaknesses
+    - Actionable recommendations for improvement
+    """
+
+    name = "reasoning_trace"
+
+    def __init__(
+        self,
+        model: ChatOpenAI | None = None,
+        threshold: float = 0.7,
+    ):
+        """Initialize the reasoning trace evaluator.
+
+        Args:
+            model: ChatOpenAI model to use for evaluation.
+            threshold: Score threshold to pass.
+        """
+        self.model = model
+        self.threshold = threshold
+
+    def evaluate(
+        self,
+        question: str,
+        report: str,
+        plan: list[str] | None = None,
+        execution: list[dict[str, Any]] | None = None,
+    ) -> EvaluatorResult:
+        """Evaluate the agent's reasoning trace comprehensively.
+
+        Args:
+            question: The original research question.
+            report: The generated research report.
+            plan: The agent's planned search queries.
+            execution: The execution results (research sections).
+
+        Returns:
+            EvaluatorResult with detailed reasoning analysis and MLflow-ready metadata.
+        """
+        if plan is None or execution is None:
+            return EvaluatorResult(
+                score=0.0,
+                passed=False,
+                reason="Missing plan or execution data for reasoning evaluation",
+                metadata={"error": "missing_context"},
+            )
+
+        if self.model is None:
+            import os
+
+            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            self.model = ChatOpenAI(model=model_name, temperature=0)
+
+        # Build comprehensive trace context
+        plan_str = "\n".join(f"{i + 1}. {query}" for i, query in enumerate(plan))
+
+        execution_str = []
+        for i, section in enumerate(execution, 1):
+            topic = section.get("topic", "Unknown")
+            tool = section.get("tool_used", "unknown")
+            source_count = section.get("source_count", 0)
+            content_preview = section.get("content", "")[:200] + "..."
+            execution_str.append(
+                f"{i}. Query: {topic}\n"
+                f"   Tool: {tool}\n"
+                f"   Sources: {source_count}\n"
+                f"   Result Preview: {content_preview}"
+            )
+
+        execution_text = "\n\n".join(execution_str)
+
+        prompt = f"""You are an expert evaluator assessing the quality of an AI agent's reasoning and planning process.
+
+Based on principles from "Evaluating Reasoning and Planning in Agentic LLM Systems", evaluate the internal reasoning process, not just the final output. A sound but slightly suboptimal answer demonstrates more value than a correct answer derived through flawed reasoning.
+
+## Research Question
+{question}
+
+## Agent's Plan (Search Queries)
+{plan_str}
+
+## Execution Trace (Actions Taken)
+{execution_text}
+
+## Final Report Quality
+Length: {len(report)} characters
+Preview: {report[:300]}...
+
+---
+
+Evaluate this reasoning trace across these dimensions (0.0-1.0 scale for each):
+
+1. **Logical Coherence** (0.0-1.0)
+   - Do successive queries follow rationally from the research goal?
+   - Is there a clear thought progression?
+   - Are there contradictions or logical gaps?
+
+2. **Goal Alignment** (0.0-1.0)
+   - Is each query consistently directed toward answering the question?
+   - Do queries explore relevant aspects or drift off-topic?
+   - Is the scope appropriate?
+
+3. **Efficiency** (0.0-1.0)
+   - Does the plan avoid unnecessary redundancy?
+   - Are there wasteful loops or duplicate efforts?
+   - Is the number of queries appropriate ({len(plan)} queries)?
+
+4. **Reasoning Faithfulness** (0.0-1.0)
+   - Do execution results align with planned intent?
+   - Did the agent adapt appropriately when results differed from expectations?
+   - Was tool selection (web vs LLM) appropriate for each query?
+
+5. **Intermediate State Accuracy** (0.0-1.0)
+   - Did the agent correctly identify necessary facts before synthesis?
+   - Were dependencies between queries handled properly?
+   - Did later queries build on earlier findings?
+
+6. **Hypothesis Generation** (0.0-1.0)
+   - Were plausible alternatives explored where appropriate?
+   - Is there evidence of consideration of multiple perspectives?
+   - Did the agent decompose complex questions effectively?
+
+Provide your evaluation in this exact JSON format:
+{{
+  "logical_coherence": {{"score": <0.0-1.0>, "explanation": "<detailed reasoning>"}},
+  "goal_alignment": {{"score": <0.0-1.0>, "explanation": "<detailed reasoning>"}},
+  "efficiency": {{"score": <0.0-1.0>, "explanation": "<detailed reasoning>"}},
+  "reasoning_faithfulness": {{"score": <0.0-1.0>, "explanation": "<detailed reasoning>"}},
+  "intermediate_state_accuracy": {{"score": <0.0-1.0>, "explanation": "<detailed reasoning>"}},
+  "hypothesis_generation": {{"score": <0.0-1.0>, "explanation": "<detailed reasoning>"}},
+  "overall_assessment": "<comprehensive summary of reasoning quality>",
+  "strengths": ["<strength 1>", "<strength 2>", ...],
+  "weaknesses": ["<weakness 1>", "<weakness 2>", ...],
+  "recommendations": ["<improvement 1>", "<improvement 2>", ...]
+}}"""
+
+        try:
+            response = self.model.invoke(prompt)
+            import json
+
+            content = response.content.strip()
+
+            # Remove markdown code blocks if present
+            if content.startswith("```"):
+                content = re.sub(r"```(?:json)?\n?", "", content)
+                content = content.strip()
+
+            result = json.loads(content)
+
+            # Extract dimension scores
+            dimensions = {
+                "logical_coherence": result.get("logical_coherence", {}),
+                "goal_alignment": result.get("goal_alignment", {}),
+                "efficiency": result.get("efficiency", {}),
+                "reasoning_faithfulness": result.get("reasoning_faithfulness", {}),
+                "intermediate_state_accuracy": result.get(
+                    "intermediate_state_accuracy", {}
+                ),
+                "hypothesis_generation": result.get("hypothesis_generation", {}),
+            }
+
+            # Calculate overall score as weighted average
+            dimension_scores = [
+                dimensions["logical_coherence"].get("score", 0.5),
+                dimensions["goal_alignment"].get("score", 0.5),
+                dimensions["efficiency"].get("score", 0.5),
+                dimensions["reasoning_faithfulness"].get("score", 0.5),
+                dimensions["intermediate_state_accuracy"].get("score", 0.5),
+                dimensions["hypothesis_generation"].get("score", 0.5),
+            ]
+            overall_score = sum(dimension_scores) / len(dimension_scores)
+
+            # Extract explanations for detailed reporting
+            explanations = {
+                dim: data.get("explanation", "No explanation provided")
+                for dim, data in dimensions.items()
+            }
+
+            passed = overall_score >= self.threshold
+
+            # Build detailed reason text
+            reason_parts = [result.get("overall_assessment", "No assessment provided")]
+            if result.get("strengths"):
+                reason_parts.append(
+                    "Strengths: " + "; ".join(result.get("strengths", []))
+                )
+            if result.get("weaknesses"):
+                reason_parts.append(
+                    "Weaknesses: " + "; ".join(result.get("weaknesses", []))
+                )
+
+            reason = " | ".join(reason_parts)
+
+            logger.debug(
+                "reasoning_trace_evaluation",
+                overall_score=overall_score,
+                passed=passed,
+                dimension_count=len(dimensions),
+            )
+
+            # Prepare MLflow-ready metadata
+            metadata = {
+                # Individual dimension scores
+                "logical_coherence_score": dimensions["logical_coherence"].get(
+                    "score", 0.0
+                ),
+                "goal_alignment_score": dimensions["goal_alignment"].get("score", 0.0),
+                "efficiency_score": dimensions["efficiency"].get("score", 0.0),
+                "reasoning_faithfulness_score": dimensions[
+                    "reasoning_faithfulness"
+                ].get("score", 0.0),
+                "intermediate_state_accuracy_score": dimensions[
+                    "intermediate_state_accuracy"
+                ].get("score", 0.0),
+                "hypothesis_generation_score": dimensions["hypothesis_generation"].get(
+                    "score", 0.0
+                ),
+                # Explanations for each dimension
+                "logical_coherence_explanation": explanations["logical_coherence"],
+                "goal_alignment_explanation": explanations["goal_alignment"],
+                "efficiency_explanation": explanations["efficiency"],
+                "reasoning_faithfulness_explanation": explanations[
+                    "reasoning_faithfulness"
+                ],
+                "intermediate_state_accuracy_explanation": explanations[
+                    "intermediate_state_accuracy"
+                ],
+                "hypothesis_generation_explanation": explanations[
+                    "hypothesis_generation"
+                ],
+                # Overall assessment
+                "overall_assessment": result.get("overall_assessment", "No assessment"),
+                "strengths": result.get("strengths", []),
+                "weaknesses": result.get("weaknesses", []),
+                "recommendations": result.get("recommendations", []),
+                # Context metrics
+                "plan_size": len(plan),
+                "execution_steps": len(execution),
+                "full_evaluation_response": content[:1000],  # Truncate for storage
+            }
+
+            return EvaluatorResult(
+                score=overall_score,
+                passed=passed,
+                reason=reason,
+                metadata=metadata,
+            )
+
+        except Exception as e:
+            logger.error("reasoning_trace_evaluation_error", error=str(e))
+            return EvaluatorResult(
+                score=0.5,
+                passed=False,
+                reason=f"Evaluation failed: {str(e)}",
+                metadata={"error": str(e), "error_type": type(e).__name__},
+            )
+
+
 # Convenience function to get default evaluators
 def get_default_evaluators(
     include_llm: bool = False,
@@ -961,7 +1239,8 @@ def get_default_evaluators(
 
     Args:
         include_llm: Whether to include LLM-based evaluators.
-        include_reasoning: Whether to include reasoning evaluators.
+        include_reasoning: Whether to include reasoning evaluators (includes
+            PlanQuality, PlanAdherence, and ReasoningTrace evaluators).
         include_web_search: Whether to include web search evaluators.
 
     Returns:
@@ -985,6 +1264,7 @@ def get_default_evaluators(
             [
                 PlanQualityEvaluator(),
                 PlanAdherenceEvaluator(),
+                ReasoningTraceEvaluator(),
             ]
         )
 
