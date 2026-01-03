@@ -4,13 +4,15 @@ A LangGraph-based deep research agent that uses OpenAI LLMs to perform comprehen
 
 ## Features
 
-- **Deep Research Pattern**: Multi-iteration research workflow with query generation, parallel research, and synthesis
+- **Deep Research Pattern**: Multi-iteration research workflow with query generation, tool selection, research execution, and synthesis
 - **LangGraph Integration**: Built on LangGraph's StateGraph for structured agent workflows
-- **OpenAI LLMs**: Uses OpenAI models for research and synthesis
-- **Automated Evaluation**: Multiple evaluators to assess report quality:
-  - Length and structure validation
-  - LLM-based relevance and completeness checking
-  - Reasoning evaluators for plan quality and adherence
+- **OpenAI LLMs**: Uses OpenAI models for research, synthesis, and intelligent tool selection
+- **Web Search Integration**: DuckDuckGo-based web search with parallel content fetching for current information
+- **Intelligent Tool Selection**: LLM-driven decision making to choose between web search and knowledge-based research
+- **Comprehensive Evaluation System**: Three tiers of evaluators to assess report and reasoning quality
+  - **Basic Evaluators**: Length and structure validation (synchronous)
+  - **LLM Evaluators**: Relevance and completeness assessment (async)
+  - **Reasoning Evaluators**: Plan quality, adherence, source quality, tool selection, and comprehensive reasoning trace analysis
 - **MLflow Tracking**: Automatic experiment tracking with LLM tracing, metrics, and artifact storage
 - **Structured Logging**: JSON and colored console logging with structlog for observability
 - **Configurable**: Customize model, iterations, research depth, and evaluation criteria
@@ -117,19 +119,117 @@ The agent follows the deep research pattern with integrated evaluation and track
 
 ### Core Research Flow
 
-1. **Initialize**: Extract the research question from user input
-2. **Generate Queries**: Create multiple search queries to explore different aspects
-3. **Execute Research**: Use LLM to perform deep research on each query
-4. **Synthesize**: Combine findings into a comprehensive report
-5. **Iterate**: Optionally repeat for more depth
+```mermaid
+graph TD
+    Start([User Question]) --> Init[Initialize<br/>Extract question from input]
+    Init --> GenQ[Generate Queries<br/>LLM creates 3 search queries]
+    GenQ --> Exec[Execute Research<br/>For each query:]
+
+    Exec --> ToolSel{Tool Selection<br/>LLM decides}
+    ToolSel -->|Current/Factual| WebSearch[Web Search<br/>DuckDuckGo + Content Fetch]
+    ToolSel -->|Conceptual| LLMRes[LLM Research<br/>Knowledge-based]
+
+    WebSearch --> Section[Create Research Section<br/>topic, content, sources]
+    LLMRes --> Section
+
+    Section --> Continue{More Research?<br/>iteration < max<br/>sections < 6}
+    Continue -->|Yes| GenQ
+    Continue -->|No| Synth[Synthesize Report<br/>Combine all sections]
+
+    Synth --> Eval[Evaluation<br/>3-tier assessment]
+    Eval --> Track[MLflow Tracking<br/>Log metrics & traces]
+    Track --> End([Final Report])
+
+    style Start fill:#e1f5e1
+    style End fill:#e1f5e1
+    style ToolSel fill:#fff4e1
+    style Continue fill:#fff4e1
+    style Eval fill:#e1e5ff
+    style Track fill:#e1e5ff
+```
+
+### Research Tools
+
+The agent uses multiple specialized tools orchestrated by LangGraph:
+
+1. **Query Generator** (`create_query_generator`)
+   - Generates 3 diverse search queries from the research question
+   - Uses LLM to decompose complex questions into focused sub-queries
+   - Ensures comprehensive coverage of the topic
+
+2. **Tool Selector** (`select_research_tool`)
+   - LLM-driven decision making for each query
+   - Chooses between `web_search` and `llm` based on query characteristics
+   - First query always uses web search for current information
+
+3. **Web Search** (`create_web_search_tool`)
+   - DuckDuckGo text search (no API key required)
+   - Parallel content fetching for top 3 results using trafilatura
+   - Returns formatted content with source URLs
+   - Configurable retry logic for rate limiting
+   - Max 5 results per query
+
+4. **Deep Research** (`create_deep_research_tool`)
+   - LLM-based research using OpenAI models
+   - Used for conceptual or explanatory queries
+   - Leverages model's knowledge base
+
+5. **Synthesizer** (`create_synthesizer`)
+   - Combines all research sections into a cohesive report
+   - LLM ensures logical flow and removes redundancy
+   - Generates structured markdown output
 
 ### Evaluation System
 
-The system includes multiple evaluator types:
+The system implements a comprehensive 3-tier evaluation framework:
 
-- **Basic Evaluators**: Length and structure validation
-- **LLM-based Evaluators**: Relevance and completeness assessment using GPT models
-- **Reasoning Evaluators**: Plan quality and adherence tracking for agent transparency
+#### Tier 1: Basic Evaluators (Synchronous)
+- **LengthEvaluator**: Validates minimum word count (100) and character count (500)
+- **StructureEvaluator**: Checks for markdown headings, introduction, and conclusion
+
+#### Tier 2: LLM-Based Evaluators (Async)
+- **RelevanceEvaluator**: Assesses if report addresses the research question (0.0-1.0 scale)
+- **CompletenessEvaluator**: Evaluates depth and coverage of key aspects
+
+#### Tier 3: Reasoning Evaluators (Requires Plan + Execution Context)
+These evaluators assess the agent's internal reasoning process, not just outputs:
+
+- **PlanQualityEvaluator**: Evaluates the quality of generated search queries
+  - Logical coherence and coverage
+  - Efficiency and appropriate granularity
+
+- **PlanAdherenceEvaluator**: Checks if execution followed the plan
+  - Compares planned queries vs. actual research sections
+  - Identifies deviations and completeness
+
+- **SourceQualityReasoningEvaluator**: Assesses source diversity and quality
+  - Counts unique sources and domains
+  - Tracks web search vs. LLM usage
+
+- **ToolSelectionEvaluator**: Evaluates appropriateness of tool choices
+  - Web search for factual/current queries
+  - LLM for conceptual queries
+
+- **ReasoningTraceEvaluator**: Comprehensive reasoning analysis across 6 dimensions
+  - Logical Coherence: Do queries follow rationally?
+  - Goal Alignment: Are queries directed toward the question?
+  - Efficiency: Avoiding redundancy and waste
+  - Reasoning Faithfulness: Does execution align with plan?
+  - Intermediate State Accuracy: Proper fact identification
+  - Hypothesis Generation: Exploring alternatives systematically
+  - Based on principles from "Evaluating Reasoning and Planning in Agentic LLM Systems"
+
+### State Management
+
+The agent maintains state through `ResearchState` (TypedDict):
+- `messages`: Conversation history
+- `question`: Original research question
+- `search_queries`: Generated queries (the plan)
+- `research_sections`: Execution results with metadata
+  - `topic`, `content`, `sources`, `tool_used`, `source_count`
+- `final_report`: Synthesized output
+- `iteration`: Current iteration count
+- `max_iterations`: Maximum iterations allowed
 
 ### Observability
 
@@ -139,37 +239,7 @@ The system includes multiple evaluator types:
   - Metrics for iteration count, section count, and evaluation scores
   - Artifacts including the final report and original question
   - Evaluation metadata and pass/fail rates
-
-```
-+------------------+
-|   Initialize     |
-+--------+---------+
-         |
-         v
-+------------------+
-| Generate Queries |<---------+
-+--------+---------+          |
-         |                    |
-         v                    |
-+------------------+          |
-| Execute Research |          |
-+--------+---------+          |
-         |                    |
-         v                    |
-    +--------+                |
-    | More?  |--Yes-----------+
-    +---+----+
-        |
-        No
-        |
-        v
-+------------------+
-|   Synthesize     |
-+--------+---------+
-         |
-         v
-      [END]
-```
+  - Reasoning evaluation dimensions and explanations
 
 ## Testing
 
