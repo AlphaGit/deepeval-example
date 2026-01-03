@@ -687,16 +687,282 @@ Respond with ONLY a JSON object in this exact format:
             )
 
 
+class SourceQualityReasoningEvaluator(ReasoningEvaluator):
+    """Evaluates source quality with access to research sections."""
+
+    name = "source_quality"
+
+    def __init__(
+        self,
+        min_sources: int = 3,
+        min_unique_domains: int = 2,
+        threshold: float = 0.6,
+    ):
+        """Initialize the source quality evaluator.
+
+        Args:
+            min_sources: Minimum number of sources expected.
+            min_unique_domains: Minimum number of unique domains.
+            threshold: Score threshold to pass.
+        """
+        self.min_sources = min_sources
+        self.min_unique_domains = min_unique_domains
+        self.threshold = threshold
+
+    def evaluate(
+        self,
+        question: str,
+        report: str,
+        plan: list[str] | None = None,
+        execution: list[dict[str, Any]] | None = None,
+    ) -> EvaluatorResult:
+        """Evaluate source quality and diversity.
+
+        Args:
+            question: The original research question.
+            report: The generated research report.
+            plan: The agent's plan (not used).
+            execution: The execution results (research sections).
+
+        Returns:
+            EvaluatorResult with score, pass/fail, and source metrics.
+        """
+        if execution is None:
+            return EvaluatorResult(
+                score=0.0,
+                passed=False,
+                reason="No execution data provided",
+                metadata={"error": "missing_execution"},
+            )
+
+        # Extract all sources from execution
+        all_sources = []
+        web_search_count = 0
+        llm_count = 0
+
+        for section in execution:
+            sources = section.get("sources", [])
+            all_sources.extend(sources)
+
+            tool_used = section.get("tool_used", "llm")
+            if tool_used == "web_search":
+                web_search_count += 1
+            else:
+                llm_count += 1
+
+        # Remove "LLM Knowledge Base" pseudo-source
+        real_sources = [s for s in all_sources if s != "LLM Knowledge Base"]
+        unique_sources = list(set(real_sources))
+
+        # Extract unique domains
+        from urllib.parse import urlparse
+
+        unique_domains = set()
+        for source in real_sources:
+            try:
+                domain = urlparse(source).netloc
+                if domain:
+                    unique_domains.add(domain)
+            except Exception:
+                pass
+
+        # Calculate scores
+        source_count_score = (
+            min(1.0, len(unique_sources) / self.min_sources)
+            if self.min_sources > 0
+            else 1.0
+        )
+        domain_diversity_score = (
+            min(1.0, len(unique_domains) / self.min_unique_domains)
+            if self.min_unique_domains > 0
+            else 1.0
+        )
+
+        # Bonus for using web search
+        web_search_bonus = 0.1 if web_search_count > 0 else 0.0
+
+        score = (source_count_score + domain_diversity_score) / 2 + web_search_bonus
+        score = min(1.0, score)  # Cap at 1.0
+
+        passed = score >= self.threshold
+
+        logger.debug(
+            "source_quality_evaluation",
+            unique_sources=len(unique_sources),
+            unique_domains=len(unique_domains),
+            web_search_count=web_search_count,
+            llm_count=llm_count,
+            score=score,
+            passed=passed,
+        )
+
+        return EvaluatorResult(
+            score=score,
+            passed=passed,
+            reason=f"Sources: {len(unique_sources)}/{self.min_sources}, Domains: {len(unique_domains)}/{self.min_unique_domains}, Web searches: {web_search_count}",
+            metadata={
+                "unique_sources": len(unique_sources),
+                "unique_domains": len(unique_domains),
+                "total_sources": len(real_sources),
+                "web_search_count": web_search_count,
+                "llm_count": llm_count,
+                "source_list": unique_sources[:10],  # First 10 sources
+                "domain_list": list(unique_domains),
+            },
+        )
+
+
+class ToolSelectionEvaluator(ReasoningEvaluator):
+    """Evaluates whether the agent selected appropriate tools for each query."""
+
+    name = "tool_selection"
+
+    def __init__(
+        self,
+        model: ChatOpenAI | None = None,
+        threshold: float = 0.7,
+    ):
+        """Initialize the tool selection evaluator.
+
+        Args:
+            model: ChatOpenAI model to use for evaluation.
+            threshold: Score threshold to pass.
+        """
+        self.model = model
+        self.threshold = threshold
+
+    def evaluate(
+        self,
+        question: str,
+        report: str,
+        plan: list[str] | None = None,
+        execution: list[dict[str, Any]] | None = None,
+    ) -> EvaluatorResult:
+        """Evaluate the appropriateness of tool selections.
+
+        Args:
+            question: The original research question.
+            report: The generated research report (not used).
+            plan: The agent's plan (search queries).
+            execution: The execution results (research sections with tool info).
+
+        Returns:
+            EvaluatorResult with score, pass/fail, and tool selection analysis.
+        """
+        if execution is None or plan is None:
+            return EvaluatorResult(
+                score=0.0,
+                passed=False,
+                reason="No execution or plan data provided",
+                metadata={"error": "missing_context"},
+            )
+
+        if self.model is None:
+            import os
+
+            model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            self.model = ChatOpenAI(model=model_name, temperature=0)
+
+        # Build summary of tool choices
+        tool_choices = []
+        for section in execution:
+            query = section.get("topic", "Unknown")
+            tool = section.get("tool_used", "llm")
+            source_count = section.get("source_count", 0)
+            tool_choices.append(
+                f"- Query: '{query}' → Tool: {tool} (sources: {source_count})"
+            )
+
+        choices_str = "\n".join(tool_choices)
+
+        prompt = f"""You are an expert evaluator assessing whether an AI research agent made good decisions about which tools to use.
+
+Original Research Question: {question}
+
+Tool Choices Made:
+{choices_str}
+
+Evaluate the appropriateness of these tool choices on a scale of 0.0 to 1.0:
+- 1.0: Excellent choices - used web search for factual/current queries, LLM for conceptual
+- 0.8: Good choices - mostly appropriate with minor room for improvement
+- 0.6: Acceptable - some suboptimal choices but generally reasonable
+- 0.4: Poor - several queries used wrong tool
+- 0.2: Very poor - most queries used inappropriate tools
+- 0.0: Completely inappropriate tool selection
+
+Consider:
+1. Were factual, current, or data-driven queries researched via web search?
+2. Were conceptual or explanatory queries handled by the LLM?
+3. Is there good balance between web and LLM research?
+4. Did web searches produce actual sources?
+
+Respond with ONLY a JSON object in this exact format:
+{{"score": <float>, "reason": "<brief explanation>", "good_choices": ["query1"], "poor_choices": ["query2"]}}"""
+
+        try:
+            response = self.model.invoke(prompt)
+            import json
+
+            content = response.content.strip()
+            if content.startswith("```"):
+                content = re.sub(r"```(?:json)?\n?", "", content)
+                content = content.strip()
+
+            result = json.loads(content)
+            score = float(result.get("score", 0.5))
+            reason = result.get("reason", "No reason provided")
+            good_choices = result.get("good_choices", [])
+            poor_choices = result.get("poor_choices", [])
+
+            passed = score >= self.threshold
+
+            logger.debug(
+                "tool_selection_evaluation",
+                score=score,
+                passed=passed,
+                good_choices_count=len(good_choices),
+                poor_choices_count=len(poor_choices),
+            )
+
+            return EvaluatorResult(
+                score=score,
+                passed=passed,
+                reason=reason,
+                metadata={
+                    "good_choices": good_choices,
+                    "poor_choices": poor_choices,
+                    "web_search_count": sum(
+                        1 for s in execution if s.get("tool_used") == "web_search"
+                    ),
+                    "llm_count": sum(
+                        1 for s in execution if s.get("tool_used") == "llm"
+                    ),
+                    "model_response": content[:500],
+                },
+            )
+
+        except Exception as e:
+            logger.error("tool_selection_evaluation_error", error=str(e))
+            return EvaluatorResult(
+                score=0.5,
+                passed=False,
+                reason=f"Evaluation failed: {str(e)}",
+                metadata={"error": str(e)},
+            )
+
+
 # Convenience function to get default evaluators
 def get_default_evaluators(
     include_llm: bool = False,
     include_reasoning: bool = False,
+    include_web_search: bool = False,
 ) -> list[Evaluator]:
     """Get a list of default evaluators.
 
     Args:
         include_llm: Whether to include LLM-based evaluators.
         include_reasoning: Whether to include reasoning evaluators.
+        include_web_search: Whether to include web search evaluators.
 
     Returns:
         List of Evaluator instances.
@@ -719,6 +985,14 @@ def get_default_evaluators(
             [
                 PlanQualityEvaluator(),
                 PlanAdherenceEvaluator(),
+            ]
+        )
+
+    if include_web_search:
+        evaluators.extend(
+            [
+                SourceQualityReasoningEvaluator(),
+                ToolSelectionEvaluator(),
             ]
         )
 

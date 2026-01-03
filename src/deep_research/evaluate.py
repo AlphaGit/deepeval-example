@@ -24,6 +24,7 @@ def run_research_with_evaluation(
     evaluators: list[Evaluator] | None = None,
     include_llm_evaluators: bool = False,
     include_reasoning_evaluators: bool = False,
+    include_web_search_evaluators: bool = False,
     experiment_name: str = "deep-research",
     run_name: str | None = None,
     tags: dict[str, str] | None = None,
@@ -71,6 +72,7 @@ def run_research_with_evaluation(
         evaluators = get_default_evaluators(
             include_llm=include_llm_evaluators,
             include_reasoning=include_reasoning_evaluators,
+            include_web_search=include_web_search_evaluators,
         )
 
     # Check if we have reasoning evaluators that need extra context
@@ -102,6 +104,15 @@ def run_research_with_evaluation(
         result.metadata["max_iterations"] = max_iterations
         result.metadata["plan_queries"] = plan
         result.metadata["section_topics"] = [s.get("topic", "") for s in execution]
+
+        # Calculate web search metrics from execution data
+        result.web_search_count = sum(
+            1 for s in execution if s.get("tool_used") == "web_search"
+        )
+        result.llm_search_count = sum(
+            1 for s in execution if s.get("tool_used") == "llm"
+        )
+        result.total_sources = sum(s.get("source_count", 0) for s in execution)
 
         # Run evaluators with reasoning context
         eval_results = run_evaluators_with_reasoning(

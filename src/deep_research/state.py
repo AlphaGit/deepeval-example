@@ -11,6 +11,8 @@ class ResearchSection(TypedDict):
     topic: str
     content: str
     sources: list[str]
+    tool_used: str
+    source_count: int
 
 
 class ResearchState(TypedDict):

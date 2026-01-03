@@ -63,3 +63,28 @@ Should more research be conducted? Consider:
 
 Respond with JSON: {{"needs_more_research": true/false, "reason": "explanation", "suggested_queries": ["query1", "query2"] if needed}}
 """
+
+TOOL_SELECTION_PROMPT = """You are a research planning assistant that decides which tool to use for research.
+
+Research Query: {query}
+
+Available tools:
+1. web_search - Search the internet for current, factual information
+2. llm - Use the language model's knowledge for conceptual explanations
+
+Choose "web_search" if the query needs:
+- Current events or recent information (news, trends, recent developments)
+- Factual data, statistics, numbers, or specific facts
+- Information about specific companies, products, people, or organizations
+- Time-sensitive information or "what's new" type questions
+- Verifiable facts that change over time
+
+Choose "llm" if the query needs:
+- Conceptual explanations or theoretical knowledge
+- General principles or frameworks
+- Historical context or established knowledge
+- Synthesis of ideas or abstract reasoning
+- How-to guides or methodologies
+
+Respond with ONLY one word: either "web_search" or "llm"
+"""

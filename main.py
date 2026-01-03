@@ -47,9 +47,7 @@ def main():
             print("=" * 40)
             for eval_result in result.evaluations:
                 status = "✓ PASS" if eval_result.passed else "✗ FAIL"
-                print(
-                    f"  {eval_result.name:20s}: {eval_result.score:.2f} [{status}]"
-                )
+                print(f"  {eval_result.name:20s}: {eval_result.score:.2f} [{status}]")
                 # Show reason for reasoning evaluators
                 if eval_result.name in ["plan_quality", "plan_adherence"]:
                     reason = eval_result.metadata.get("reason", "")

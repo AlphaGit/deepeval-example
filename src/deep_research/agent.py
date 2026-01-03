@@ -9,12 +9,50 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
 from .logging import get_logger, log_duration
+from .prompts import TOOL_SELECTION_PROMPT
 from .state import ResearchSection, ResearchState
-from .tools import create_deep_research_tool, create_query_generator, create_synthesizer
+from .tools import (
+    create_deep_research_tool,
+    create_query_generator,
+    create_synthesizer,
+    create_web_search_tool,
+)
 
 load_dotenv()
 
 logger = get_logger("agent")
+
+
+def select_research_tool(query: str, model: ChatOpenAI) -> str:
+    """Determine which research tool to use for a query.
+
+    Uses an LLM to decide whether to use web search or LLM-based research
+    based on the characteristics of the query.
+
+    Args:
+        query: The research query.
+        model: The LLM to use for decision making.
+
+    Returns:
+        Either "web_search" or "llm".
+    """
+    prompt = TOOL_SELECTION_PROMPT.format(query=query)
+
+    try:
+        response = model.invoke(prompt)
+        decision = response.content.strip().lower()
+
+        if "web_search" in decision:
+            return "web_search"
+        else:
+            return "llm"
+    except Exception as e:
+        logger.warning(
+            "tool_selection_failed",
+            error=str(e),
+            fallback="llm",
+        )
+        return "llm"  # Safe fallback
 
 
 def create_research_agent(
@@ -39,15 +77,18 @@ def create_research_agent(
     model_name = model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     model = ChatOpenAI(model=model_name, temperature=0.7)
 
+    # Create tools
+    deep_research = create_deep_research_tool(model)
+    web_search = create_web_search_tool(max_results=5)
+    generate_queries = create_query_generator(model)
+    synthesize = create_synthesizer(model)
+
     logger.info(
         "agent_created",
         model=model_name,
         max_iterations=max_iterations,
+        web_search_enabled=web_search is not None,
     )
-
-    deep_research = create_deep_research_tool(model)
-    generate_queries = create_query_generator(model)
-    synthesize = create_synthesizer(model)
 
     def initialize(state: ResearchState) -> ResearchState:
         """Initialize the research state from the user's question."""
@@ -113,6 +154,7 @@ def create_research_agent(
             node="execute_research",
             iteration=iteration,
             query_count=len(queries),
+            web_search_available=web_search is not None,
         )
 
         sections: list[ResearchSection] = []
@@ -126,21 +168,66 @@ def create_research_agent(
                 query=query,
             )
 
+            # Decide which tool to use
+            if web_search is not None:
+                # Force web search for the first query in the first iteration
+                # This ensures research always starts with current, real-world information
+                if iteration == 1 and i == 1:
+                    tool_choice = "web_search"
+                    logger.info(
+                        "tool_selected",
+                        query=query,
+                        tool="web_search",
+                        reason="forced_first_query",
+                    )
+                else:
+                    tool_choice = select_research_tool(query, model)
+                    logger.info("tool_selected", query=query, tool=tool_choice)
+            else:
+                tool_choice = "llm"
+                logger.info(
+                    "tool_selected",
+                    query=query,
+                    tool="llm",
+                    reason="web_search_unavailable",
+                )
+
+            # Execute research with selected tool
             with log_duration(
-                logger, "research_query", iteration=iteration, query_index=i
+                logger,
+                "research_query",
+                iteration=iteration,
+                query_index=i,
+                tool=tool_choice,
             ) as result_ctx:
-                result = deep_research.invoke(query)
-                result_ctx["content_length"] = len(result)
+                if tool_choice == "web_search":
+                    content, sources = web_search.invoke(query)
+                    result_ctx["content_length"] = len(content)
+                    result_ctx["source_count"] = len(sources)
+                else:
+                    content = deep_research.invoke(query)
+                    sources = ["LLM Knowledge Base"]
+                    result_ctx["content_length"] = len(content)
+                    result_ctx["source_count"] = 0
+
+            # Calculate real source count (exclude "LLM Knowledge Base")
+            real_source_count = len([s for s in sources if s != "LLM Knowledge Base"])
 
             section: ResearchSection = {
                 "topic": query,
-                "content": result,
-                "sources": ["LLM Knowledge Base"],
+                "content": content,
+                "sources": sources,
+                "tool_used": tool_choice,
+                "source_count": real_source_count,
             }
             sections.append(section)
 
         existing_sections = state.get("research_sections", [])
         total_sections = len(existing_sections) + len(sections)
+
+        # Count tool usage
+        web_search_count = sum(1 for s in sections if s["tool_used"] == "web_search")
+        llm_count = sum(1 for s in sections if s["tool_used"] == "llm")
 
         logger.info(
             "node_exit",
@@ -148,6 +235,8 @@ def create_research_agent(
             iteration=iteration,
             new_sections=len(sections),
             total_sections=total_sections,
+            web_searches=web_search_count,
+            llm_searches=llm_count,
         )
 
         return {"research_sections": existing_sections + sections}

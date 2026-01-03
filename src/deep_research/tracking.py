@@ -35,6 +35,9 @@ class ResearchResult:
     iteration_count: int
     section_count: int
     report_length: int
+    web_search_count: int = 0
+    llm_search_count: int = 0
+    total_sources: int = 0
     evaluations: list[EvaluationResult] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -116,6 +119,14 @@ def track_research_run(
             mlflow.log_metric("iteration_count", result.iteration_count)
             mlflow.log_metric("section_count", result.section_count)
             mlflow.log_metric("report_length", result.report_length)
+            mlflow.log_metric("web_search_count", result.web_search_count)
+            mlflow.log_metric("llm_search_count", result.llm_search_count)
+            mlflow.log_metric("total_sources", result.total_sources)
+
+            # Calculate web search usage ratio
+            if result.section_count > 0:
+                web_search_ratio = result.web_search_count / result.section_count
+                mlflow.log_metric("web_search_ratio", web_search_ratio)
 
             # Log evaluation results
             for eval_result in result.evaluations:
